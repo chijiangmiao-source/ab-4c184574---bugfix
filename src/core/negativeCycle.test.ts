@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { findNegativeCycleWitness } from './negativeCycle';
+import { parseBatch } from './parse';
 import type { Assertion, Witness } from './types';
 
 let line = 0;
@@ -308,6 +309,78 @@ describe('findNegativeCycleWitness：与暴力枚举随机对拍', () => {
         expect(got!.ids, `批次 ${JSON.stringify(batch)}`).toEqual(want);
         expectValidWitness(got!);
       }
+    }
+  });
+});
+
+/**
+ * 高分支分层批次（58 事件 / 168 断言）：汇合点 S 与 L0_0..L18_2 共 19 层。
+ * 编号 1–3：S → L0_b；编号 4+9i+3a+b：Li_a → L(i+1)_b（i=0..17）；
+ * 编号 166–168：L18_a → S。指向下标 2 的边上界为 0，其余层间边上界为 1，
+ * 返回 S 的边上界均为 -1。只有始终选择下标 2 的支路才构成负环。
+ */
+function buildHighBranchingLines(): string[] {
+  const lines: string[] = [];
+  for (let b = 0; b < 3; b++) {
+    lines.push(`${1 + b} S L0_${b} ${b === 2 ? 0 : 1}`);
+  }
+  for (let i = 0; i < 18; i++) {
+    for (let a = 0; a < 3; a++) {
+      for (let b = 0; b < 3; b++) {
+        lines.push(`${4 + 9 * i + 3 * a + b} L${i}_${a} L${i + 1}_${b} ${b === 2 ? 0 : 1}`);
+      }
+    }
+  }
+  for (let a = 0; a < 3; a++) {
+    lines.push(`${166 + a} L18_${a} S -1`);
+  }
+  return lines;
+}
+
+const HIGH_BRANCHING_IDS = [...Array.from({ length: 19 }, (_, k) => 3 + 9 * k), 168];
+const HIGH_BRANCHING_EVENTS = ['S', ...Array.from({ length: 19 }, (_, i) => `L${i}_2`), 'S'];
+const HIGH_BRANCHING_CUMSUMS = [...Array.from({ length: 19 }, () => 0), -1];
+
+describe('findNegativeCycleWitness：高分支分层批次（58 事件 / 168 断言）', () => {
+  /** 完整核对唯一矛盾链：规范编号、事件链、累计和与总和 */
+  function expectCanonicalWitness(w: Witness) {
+    expect(w.ids).toEqual(HIGH_BRANCHING_IDS);
+    expect(w.events).toEqual(HIGH_BRANCHING_EVENTS);
+    expect(w.steps.map((s) => s.cumSum)).toEqual(HIGH_BRANCHING_CUMSUMS);
+    expect(w.total).toBe(-1);
+    expectValidWitness(w);
+  }
+
+  it('批次合法，且在 5 秒内返回唯一的 20 条断言矛盾链', () => {
+    const parsed = parseBatch(buildHighBranchingLines().join('\n'));
+    // 校验正常通过：168 条断言、58 个事件，均在批量限制内
+    expect(parsed.ok).toBe(true);
+    expect(parsed.assertions).toHaveLength(168);
+    expect(parsed.eventCount).toBe(58);
+
+    const t0 = performance.now();
+    const w = findNegativeCycleWitness(parsed.assertions);
+    const elapsed = performance.now() - t0;
+
+    expect(elapsed).toBeLessThan(5000);
+    expect(w).not.toBeNull();
+    expectCanonicalWitness(w!);
+  });
+
+  it('调整输入行顺序后结果完全一致', () => {
+    const lines = buildHighBranchingLines();
+    const rng = mulberry32(20260922);
+    for (let t = 0; t < 10; t++) {
+      const shuffled = [...lines];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const parsed = parseBatch(shuffled.join('\n'));
+      expect(parsed.ok).toBe(true);
+      const w = findNegativeCycleWitness(parsed.assertions);
+      expect(w).not.toBeNull();
+      expectCanonicalWitness(w!);
     }
   });
 });

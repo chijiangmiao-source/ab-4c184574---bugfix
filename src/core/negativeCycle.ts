@@ -99,63 +99,69 @@ export function findNegativeCycleWitness(assertions: Assertion[]): Witness | nul
   }
   if (minK === -1) return null;
 
+  // 贪心构造字典序最小的规范环，而非枚举全部简单环（高分支图上简单环数量
+  // 是指数级的，枚举会导致计算停滞）。规范环以环内最小编号开头，故：
+  // - 外层按编号递增选定首边，后续边编号必须严格更大（首边即环内最小编号）；
+  // - 内层 DFS 逐位尝试最小编号，用矩阵幂下界剪枝判断是否存在可行补全；
+  // - 找到的第一个完整环即所有候选中编号整数序列字典序最小者。
   const visited = new Uint8Array(n);
   const path: Edge[] = [];
   let chosen: Edge[] | undefined;
 
-  const canonicalize = (cycle: Edge[]): Edge[] => {
-    let first = 0;
-    for (const edge of byId) {
-      const index = cycle.indexOf(edge);
-      if (index !== -1) {
-        first = index;
-        break;
+  /**
+   * 从 cur 出发，在恰好补足 minK 条边并回到 start 的简单路径中，
+   * 按编号递增找第一条可行补全；找到即返回 true（path 含完整环）。
+   */
+  const dfs = (start: number, cur: number, wsum: number, firstId: number): boolean => {
+    for (const e of adj[cur]) {
+      if (e.id <= firstId) continue; // 首边须为环内严格最小编号
+      if (e.to === start) {
+        // 闭合：必须恰好用完 minK 条边且总和为负
+        if (path.length + 1 === minK && wsum + e.c < 0) {
+          path.push(e);
+          return true;
+        }
+        continue;
       }
-    }
-    return [...cycle.slice(first), ...cycle.slice(0, first)];
-  };
-
-  const lexicographicallyEarlier = (candidate: Edge[], incumbent: Edge[]): boolean => {
-    for (let i = 0; i < candidate.length; i++) {
-      if (candidate[i].id !== incumbent[i].id) return candidate[i].id < incumbent[i].id;
+      if (visited[e.to] === 1) continue;
+      const remaining = minK - path.length - 1;
+      if (remaining === 0) continue; // 最后一条边必须回到 start
+      // 下界剪枝：剩余 remaining 条边从 e.to 到 start 的最小权重（含不可达），
+      // 若连下界都无法使总和为负，则该分支不存在可行补全
+      if (wsum + e.c + powers[remaining - 1][e.to][start] >= 0) continue;
+      visited[e.to] = 1;
+      path.push(e);
+      if (dfs(start, e.to, wsum + e.c, firstId)) return true;
+      path.pop();
+      visited[e.to] = 0;
     }
     return false;
   };
 
-  const consider = (cycle: Edge[], total: number): void => {
-    if (total >= 0) return;
-    const canonical = canonicalize(cycle);
-    if (
-      chosen === undefined ||
-      canonical.length < chosen.length ||
-      (canonical.length === chosen.length && lexicographicallyEarlier(canonical, chosen))
-    ) {
-      chosen = canonical;
-    }
-  };
-
-  const enumerate = (start: number, cur: number, wsum: number): void => {
-    for (const e of adj[cur]) {
-      if (e.to === start) {
-        consider([...path, e], wsum + e.c);
-        continue;
+  for (const e1 of byId) {
+    if (e1.from === e1.to) {
+      // 负自环：仅当 minK === 1 时构成见证（边数最少优先）
+      if (minK === 1 && e1.c < 0) {
+        chosen = [e1];
+        break;
       }
-      if (visited[e.to] === 1) continue;
-      visited[e.to] = 1;
-      path.push(e);
-      enumerate(start, e.to, wsum + e.c);
-      path.pop();
-      visited[e.to] = 0;
+      continue;
     }
-  };
-
-  for (let start = 0; start < n; start++) {
+    if (minK === 1) continue;
+    // 首边可行性下界：e1.c + (minK-1 条边回到起点的最小权重) 必须能为负
+    if (e1.c + powers[minK - 2][e1.to][e1.from] >= 0) continue;
     visited.fill(0);
-    visited[start] = 1;
+    visited[e1.from] = 1;
+    visited[e1.to] = 1;
     path.length = 0;
-    enumerate(start, start, 0);
+    path.push(e1);
+    if (dfs(e1.from, e1.to, e1.c, e1.id)) {
+      chosen = [...path];
+      break;
+    }
   }
 
+  // minK 保证负简单环存在，贪心必能找到；此处仅为防御
   if (chosen === undefined || chosen.length !== minK) return null;
 
   let total = 0;
