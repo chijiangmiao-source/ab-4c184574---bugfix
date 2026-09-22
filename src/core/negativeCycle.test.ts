@@ -196,6 +196,97 @@ describe('findNegativeCycleWitness：手工用例', () => {
   });
 });
 
+/** 合法高分支批次：58 事件 / 168 断言，始终走下标 2 才成负环 */
+function buildHighBranchingBatch(): Assertion[] {
+  const batch: Assertion[] = [];
+  let line = 0;
+  const ev = (layer: number, idx: number) => (layer === -1 ? 'S' : `L${layer}_${idx}`);
+  const add = (id: number, u: string, v: string, c: number) =>
+    batch.push({ id, u, v, c, line: ++line });
+
+  // 编号 1..3：S -> 第一层三个事件；指向下标 2 的上界为 0，其余为 1
+  for (let b = 0; b < 3; b++) add(1 + b, 'S', ev(0, b), b === 2 ? 0 : 1);
+  // 相邻层之间全部九种连接：编号 4+9i+3a+b；仅终点下标为 2 时上界为 0
+  for (let i = 0; i < 18; i++) {
+    for (let a = 0; a < 3; a++) {
+      for (let b = 0; b < 3; b++) {
+        add(4 + 9 * i + 3 * a + b, ev(i, a), ev(i + 1, b), b === 2 ? 0 : 1);
+      }
+    }
+  }
+  // 编号 166..168：末层三个事件返回 S，上界均为 -1
+  for (let a = 0; a < 3; a++) add(166 + a, ev(18, a), 'S', -1);
+  return batch;
+}
+
+const EXPECTED_HIGH_IDS = [
+  3, 12, 21, 30, 39, 48, 57, 66, 75, 84, 93, 102, 111, 120, 129, 138, 147, 156, 165, 168,
+];
+const EXPECTED_HIGH_EVENTS = [
+  'S',
+  ...Array.from({ length: 19 }, (_, i) => `L${i}_2`),
+  'S',
+];
+
+describe('findNegativeCycleWitness：合法高分支批次（58 事件 / 168 断言）', () => {
+  it('5 秒内返回唯一的 20 条矛盾链：规范编号、事件链、累计和、总和', () => {
+    const batch = buildHighBranchingBatch();
+    expect(batch).toHaveLength(168);
+    expect(new Set(batch.flatMap((x) => [x.u, x.v]))).toHaveLength(58);
+    expect(new Set(batch.map((x) => x.id))).toHaveLength(168);
+
+    const t0 = Date.now();
+    const w = findNegativeCycleWitness(batch);
+    expect(Date.now() - t0).toBeLessThan(5000);
+
+    expect(w).not.toBeNull();
+    expect(w!.ids).toEqual(EXPECTED_HIGH_IDS);
+    expect(w!.events).toEqual(EXPECTED_HIGH_EVENTS);
+    // 前 19 步累计和均为 0，最后一步（及总和）为 -1
+    expect(w!.steps.map((s) => s.cumSum)).toEqual([
+      ...Array.from({ length: 19 }, () => 0),
+      -1,
+    ]);
+    expect(w!.total).toBe(-1);
+    expectValidWitness(w!);
+  });
+
+  it('乱序输入结果完全一致（多种洗牌 + 逆序）', () => {
+    const base = buildHighBranchingBatch();
+    const expectShape = (w: Witness) => {
+      expect(w.ids).toEqual(EXPECTED_HIGH_IDS);
+      expect(w.events).toEqual(EXPECTED_HIGH_EVENTS);
+      expect(w.total).toBe(-1);
+    };
+
+    const reversed = [...base].reverse();
+    expectShape(findNegativeCycleWitness(reversed)!);
+
+    const rng = mulberry32(20260922);
+    for (let t = 0; t < 10; t++) {
+      const shuffled = [...base];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const t0 = Date.now();
+      const w = findNegativeCycleWitness(shuffled);
+      expect(Date.now() - t0).toBeLessThan(5000);
+      expectShape(w!);
+      expectValidWitness(w!);
+    }
+  });
+
+  it('同规模高分支相容批次（返回边取 0）同样快速返回 null', () => {
+    const batch = buildHighBranchingBatch().map((x) =>
+      x.id >= 166 ? { ...x, c: 0 } : x,
+    );
+    const t0 = Date.now();
+    expect(findNegativeCycleWitness(batch)).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+});
+
 /** 可复现的伪随机数 */
 function mulberry32(seed: number) {
   let s = seed >>> 0;

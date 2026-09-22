@@ -41,11 +41,20 @@ function minPlusMultiply(a: number[][], b: number[][], n: number): number[][] {
  *   3. 按编号整数序列字典序取最小。
  *
  * 算法：
- * - 用 min-plus 矩阵幂求出负闭_walk_的最少边数 k（负闭_walk_可分解为简单环，
- *   故“最少边数的负简单环”边数同为 k）；
- * - 在恰好 k 条边的负简单环中按编号贪心构造字典序最小者：
- *   逐位尝试最小编号，用 DFS + 矩阵幂下界剪枝判断是否存在可行补全。
+ * - 用 min-plus 矩阵幂 W^t 求负闭_walk_的最少边数 k（对角线首次出现负值）。
+ *   关键引理：长度恰为 k 的负闭_walk_必为简单环——否则重复顶点可把它拆成
+ *   两个更短的闭_walk_，权重和为负意味着其中至少一个为负，与 k 的最小性矛盾。
+ *   故“最短负闭_walk_”与“最短负简单环”等价，且以下所有可行性判定都无需
+ *   追踪顶点访问集合：固定步数的最小权重_walk_一旦给出负值，取到该值的
+ *   _walk_拼接前缀后必然是简单环。
+ * - 规范形以环上最小编号边开头。按编号升序枚举首边 e0，并把可用边限制为
+ *   id >= e0.id；用固定步数反向 DP 判定是否存在以 e0 开头的长度 k 负闭_walk_，
+ *   第一个可行的 e0 即最优首边。
+ * - 随后逐位贪心：每一步按编号升序试探邻接边，用同一张步数 DP 精确判定
+ *   “剩余步数内能否以足够小的权重回到起点”，首个可行边即字典序最优选择。
  * 结果只依赖编号与图结构，与输入行序无关（确定性）。
+ *
+ * 复杂度：min-plus 幂 O(k n^3)；贪心构造 O(k m^2)（n ≤ 60, m ≤ 240）。
  */
 export function findNegativeCycleWitness(assertions: Assertion[]): Witness | null {
   const indexOf = new Map<string, number>();
@@ -83,11 +92,9 @@ export function findNegativeCycleWitness(assertions: Assertion[]): Witness | nul
   }
 
   // powers[t-1] = W^t（恰好 t 条边的最小权重）；逐次检查对角线找最少边数 k
-  const powers: number[][][] = [];
   let minK = -1;
   let current = w;
   for (let k = 1; k <= n; k++) {
-    powers.push(current);
     for (let i = 0; i < n; i++) {
       if (current[i][i] < 0) {
         minK = k;
@@ -95,68 +102,68 @@ export function findNegativeCycleWitness(assertions: Assertion[]): Witness | nul
       }
     }
     if (minK !== -1) break;
-    current = minPlusMultiply(current, w, n);
+    if (k < n) current = minPlusMultiply(current, w, n);
   }
   if (minK === -1) return null;
+  const k = minK;
 
-  const visited = new Uint8Array(n);
-  const path: Edge[] = [];
+  // dist[t][v]：从 v 出发、仅使用 id >= minId 的边、恰好 t 步到达 target 的
+  // 最小权重。贪心每选一条边就查 dist[remain][e.to] 判定后缀可行性。
+  const dist: number[][] = Array.from({ length: k }, () => new Array<number>(n).fill(INF));
+  const buildDist = (target: number, minId: number): void => {
+    for (let t = 0; t < k; t++) dist[t].fill(INF);
+    dist[0][target] = 0;
+    for (let t = 0; t + 1 < k; t++) {
+      const curLayer = dist[t];
+      const nextLayer = dist[t + 1];
+      for (const e of byId) {
+        if (e.id < minId) continue;
+        const tail = curLayer[e.to];
+        if (tail === INF) continue;
+        const s = e.c + tail;
+        if (s < nextLayer[e.from]) nextLayer[e.from] = s;
+      }
+    }
+  };
+
   let chosen: Edge[] | undefined;
 
-  const canonicalize = (cycle: Edge[]): Edge[] => {
-    let first = 0;
-    for (const edge of byId) {
-      const index = cycle.indexOf(edge);
-      if (index !== -1) {
-        first = index;
+  for (const first of byId) {
+    buildDist(first.from, first.id);
+    // 以 first 开头走 k 条边回到其起点的最小总权重
+    if (!(first.c + dist[k - 1][first.to] < 0)) continue;
+
+    // 首边可行：逐位贪心构造以 first 开头的字典序最小长度 k 负环
+    const picked: Edge[] = [first];
+    let cur = first.to;
+    let sum = first.c;
+    for (let t = 1; t < k; t++) {
+      const remain = k - t - 1;
+      let next: Edge | undefined;
+      for (const e of adj[cur]) {
+        if (e.id < first.id) continue;
+        const tail = dist[remain][e.to];
+        if (tail !== INF && sum + e.c + tail < 0) {
+          next = e;
+          break;
+        }
+      }
+      if (next === undefined) {
+        // 不可达分支：首边可行时，dist 的最小化定义归纳保证每步必有候选
+        picked.length = 0;
         break;
       }
+      picked.push(next);
+      cur = next.to;
+      sum += next.c;
     }
-    return [...cycle.slice(first), ...cycle.slice(0, first)];
-  };
-
-  const lexicographicallyEarlier = (candidate: Edge[], incumbent: Edge[]): boolean => {
-    for (let i = 0; i < candidate.length; i++) {
-      if (candidate[i].id !== incumbent[i].id) return candidate[i].id < incumbent[i].id;
+    if (picked.length === k) {
+      chosen = picked;
+      break;
     }
-    return false;
-  };
-
-  const consider = (cycle: Edge[], total: number): void => {
-    if (total >= 0) return;
-    const canonical = canonicalize(cycle);
-    if (
-      chosen === undefined ||
-      canonical.length < chosen.length ||
-      (canonical.length === chosen.length && lexicographicallyEarlier(canonical, chosen))
-    ) {
-      chosen = canonical;
-    }
-  };
-
-  const enumerate = (start: number, cur: number, wsum: number): void => {
-    for (const e of adj[cur]) {
-      if (e.to === start) {
-        consider([...path, e], wsum + e.c);
-        continue;
-      }
-      if (visited[e.to] === 1) continue;
-      visited[e.to] = 1;
-      path.push(e);
-      enumerate(start, e.to, wsum + e.c);
-      path.pop();
-      visited[e.to] = 0;
-    }
-  };
-
-  for (let start = 0; start < n; start++) {
-    visited.fill(0);
-    visited[start] = 1;
-    path.length = 0;
-    enumerate(start, start, 0);
   }
 
-  if (chosen === undefined || chosen.length !== minK) return null;
+  if (chosen === undefined) return null;
 
   let total = 0;
   const steps: WitnessStep[] = chosen.map((e) => {
