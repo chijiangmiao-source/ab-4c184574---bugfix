@@ -1,0 +1,15 @@
+services:
+  # 单页应用：http://localhost:${WEB_PORT:-8080}
+  web:
+    build: .
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    restart: unless-stopped
+
+  # 一次性校验：跑完 Vitest 与 Playwright 后即退出
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    environment:
+      CI: "1"

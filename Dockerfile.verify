@@ -1,0 +1,10 @@
+# 一次性校验服务：单元测试（Vitest）+ 端到端测试（Playwright/Chromium）
+# 基础镜像自带 Chromium 及其系统依赖，版本与 @playwright/test 保持一致
+FROM mcr.microsoft.com/playwright:v1.47.2-jammy
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npx playwright install chromium
+ENV CI=1
+CMD ["npm", "run", "verify"]
